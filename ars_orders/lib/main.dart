@@ -46,8 +46,8 @@ class _OrdersAppState extends State<OrdersApp> {
 
       _unlockPlayer
           .play(
+            UrlSource('assets/sounds/notificationSound.wav'),
             volume: 0,
-            UrlSource('sounds/notificationSound.wav'),
           )
           .then((_) => _unlockPlayer.stop())
           .catchError((_) {});
