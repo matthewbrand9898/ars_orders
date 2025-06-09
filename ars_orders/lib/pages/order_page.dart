@@ -1,13 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-
+import 'package:ars_orders/models/notification.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/order.dart';
 import '../services/api.dart';
 import '../services/socket_service.dart';
@@ -30,6 +34,10 @@ class _OrdersPageState extends State<OrdersPage> {
   bool? _isSortAscending = false;
   List<Order> _orders = [];
 
+  final LayerLink _notifLink = LayerLink();
+  static const double _kCardHeight = 400;
+  bool _newNotificaiton = false;
+  late final StreamSubscription<NotificationItem> _notifSub;
   final TextEditingController _searchController = TextEditingController();
 
   @override
@@ -40,6 +48,13 @@ class _OrdersPageState extends State<OrdersPage> {
     socket.off('ordersUpdated', _onSocketOrdersUpdated);
     socket.on('ordersUpdated', _onSocketOrdersUpdated);
     _loadOrders();
+
+    _notifSub = SocketService().onNewNotificationStream.listen((notif) {
+      if (!mounted) return;
+      setState(() {
+        _newNotificaiton = true;
+      });
+    });
   }
 
   @override
@@ -47,14 +62,27 @@ class _OrdersPageState extends State<OrdersPage> {
     final socket = SocketService().socket;
     socket.off('ordersUpdated', _onSocketOrdersUpdated);
     _searchController.dispose();
+    _notifSub.cancel();
     super.dispose();
+  }
+
+  /// Peeks at the very top route on the root navigator without popping anything.
+  String? _topRouteName(BuildContext context) {
+    if (!mounted) return '';
+    Route<dynamic>? top;
+    Navigator.of(context, rootNavigator: true).popUntil((route) {
+      top = route;
+      return true; // immediately stop—no popping
+    });
+    return top?.settings.name;
   }
 
   void _onSocketOrdersUpdated(dynamic _) {
     if (!mounted) return;
-    // only reload if this route is still the one on top
-    if (ModalRoute.of(context)?.isCurrent ?? false) {
-      if (!mounted) return;
+
+    final current = _topRouteName(context);
+    // only reload if we're *not* on the details page
+    if (current != 'OrderDetailPage') {
       _loadOrders(page: _currentPage);
     }
   }
@@ -99,6 +127,39 @@ class _OrdersPageState extends State<OrdersPage> {
     } else {
       throw Exception('Failed to load orders');
     }
+  }
+
+  void _showNotifications() {
+    showDialog(
+      barrierColor: Colors.transparent,
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        double dialogwidth =
+            (MediaQuery.of(ctx).size.width * 0.7).clamp(200.0, 350.0);
+
+        return Stack(
+          children: [
+            // ② Use CompositedTransformFollower to anchor to _notifLink:
+            CompositedTransformFollower(
+              link: _notifLink,
+              showWhenUnlinked: false,
+              offset: Offset(-dialogwidth + 65, 50),
+              // 36 is roughly the height of the IconButton (plus some padding). Adjust as needed.
+              child: Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  width: dialogwidth,
+                  height: _kCardHeight,
+                  child: const _NotificationSheetContent(),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _onSearch(String q) {
@@ -152,7 +213,15 @@ class _OrdersPageState extends State<OrdersPage> {
     final formatter = DateFormat('dd/MM/yyyy HH:mm');
     setState(() {
       _orders.sort((a, b) {
-        // parse a.eta, fallback to epoch if empty/invalid
+        // 1) done‐status check
+        final aDone = a.status == 'Collected' || a.status == 'Delivered';
+        final bDone = b.status == 'Collected' || b.status == 'Delivered';
+        if (aDone != bDone) {
+          // aDone true → a goes below → return positive
+          return aDone ? 1 : -1;
+        }
+
+        // 2) both same
         DateTime da;
         try {
           da = a.eta.isNotEmpty
@@ -162,7 +231,6 @@ class _OrdersPageState extends State<OrdersPage> {
           da = DateTime.fromMillisecondsSinceEpoch(0);
         }
 
-        // parse b.eta the same way
         DateTime db;
         try {
           db = b.eta.isNotEmpty
@@ -172,7 +240,12 @@ class _OrdersPageState extends State<OrdersPage> {
           db = DateTime.fromMillisecondsSinceEpoch(0);
         }
 
-        return !_isSortAscending! ? da.compareTo(db) : db.compareTo(da);
+        // 3) apply ascending/descending as before
+        if (!_isSortAscending!) {
+          return da.compareTo(db);
+        } else {
+          return db.compareTo(da);
+        }
       });
     });
   }
@@ -263,13 +336,38 @@ class _OrdersPageState extends State<OrdersPage> {
                                 .copyWith(fontWeight: FontWeight.w600)),
                       ],
                     ),
-                    const Padding(
-                      padding: EdgeInsets.all(8.0),
-                      child: CircleAvatar(
-                        radius: 25,
-                        backgroundImage: AssetImage(
-                          'images/arslogo.jpg',
-                        ),
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Row(
+                        children: [
+                          CompositedTransformTarget(
+                            link: _notifLink,
+                            child: IconButton(
+                              icon: Icon(
+                                !_newNotificaiton
+                                    ? Icons.notifications_outlined
+                                    : Icons.notification_add_rounded,
+                                size: 28,
+                                color: Colors.deepPurple,
+                              ),
+                              onPressed: () {
+                                _showNotifications();
+                                setState(() {
+                                  _newNotificaiton = false;
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(
+                            width: 4,
+                          ),
+                          const CircleAvatar(
+                            radius: 25,
+                            backgroundImage: AssetImage(
+                              'images/arslogo.jpg',
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -544,6 +642,8 @@ class _OrdersPageState extends State<OrdersPage> {
                                   await Navigator.push(
                                     context,
                                     MaterialPageRoute(
+                                        settings: const RouteSettings(
+                                            name: 'OrderDetailPage'),
                                         builder: (_) =>
                                             OrderDetailPage(order: o)),
                                   );
@@ -661,39 +761,368 @@ class _OrdersPageState extends State<OrdersPage> {
                                               CrossAxisAlignment.center,
                                           children: [
                                             // 🖼 Image
-                                            o.images.isNotEmpty
-                                                ? Card(
-                                                    color: Colors.white,
-                                                    elevation: 8,
-                                                    child: ClipRRect(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
-                                                      child: CachedNetworkImage(
-                                                        imageUrl:
-                                                            '${getBaseUrl()}/uploads/${o.images.first}',
-                                                        width: 100,
-                                                        height: 100,
-                                                        maxWidthDiskCache: 200,
-                                                        fit: BoxFit.cover,
-                                                        errorWidget:
-                                                            (_, __, ___) =>
-                                                                const Icon(
-                                                          FontAwesomeIcons
-                                                              .solidImage,
-                                                          color:
-                                                              Colors.deepPurple,
+                                            (screenWidth >= 550)
+                                                ? Row(
+                                                    spacing: 4,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      o.images.isNotEmpty
+                                                          ? Card(
+                                                              color:
+                                                                  Colors.white,
+                                                              elevation: 8,
+                                                              child: ClipRRect(
+                                                                borderRadius:
+                                                                    BorderRadius
+                                                                        .circular(
+                                                                            8),
+                                                                child:
+                                                                    CachedNetworkImage(
+                                                                  imageUrl:
+                                                                      '${getBaseUrl()}/uploads/${o.images.first}',
+                                                                  width: 100,
+                                                                  height: 100,
+                                                                  maxWidthDiskCache:
+                                                                      200,
+                                                                  fit: BoxFit
+                                                                      .cover,
+                                                                  errorWidget: (_,
+                                                                          __,
+                                                                          ___) =>
+                                                                      const Icon(
+                                                                    FontAwesomeIcons
+                                                                        .solidImage,
+                                                                    color: Colors
+                                                                        .deepPurple,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            )
+                                                          : const Icon(
+                                                              FontAwesomeIcons
+                                                                  .solidImage,
+                                                              size: 100,
+                                                              color: Colors
+                                                                  .deepPurple,
+                                                            ),
+                                                      const SizedBox(width: 12),
+                                                      if (o
+                                                          .documents.isNotEmpty)
+                                                        SizedBox(
+                                                          height: 100,
+                                                          width: clampDouble(
+                                                              screenWidth - 400,
+                                                              100,
+                                                              300),
+                                                          child: ListView
+                                                              .separated(
+                                                            scrollDirection:
+                                                                Axis.vertical,
+                                                            shrinkWrap:
+                                                                true, // ← allow it to size itself
+                                                            physics:
+                                                                const AlwaysScrollableScrollPhysics(),
+                                                            itemCount: o
+                                                                .documents
+                                                                .length,
+                                                            separatorBuilder: (_,
+                                                                    __) =>
+                                                                const SizedBox(
+                                                                    height: 2),
+                                                            itemBuilder:
+                                                                (ctx, i) {
+                                                              final doc = o
+                                                                  .documents[i];
+                                                              final url =
+                                                                  '${getBaseUrl()}/uploads/${doc.filename}';
+                                                              return GestureDetector(
+                                                                onTap: () {
+                                                                  final name = doc
+                                                                      .originalName
+                                                                      .toLowerCase();
+                                                                  final ext = name
+                                                                      .split(
+                                                                          '.')
+                                                                      .last;
+                                                                  Uri target;
+
+                                                                  if (ext ==
+                                                                      'pdf') {
+                                                                    Navigator
+                                                                        .push(
+                                                                      context,
+                                                                      MaterialPageRoute(
+                                                                        builder:
+                                                                            (_) =>
+                                                                                Scaffold(
+                                                                          appBar: AppBar(
+                                                                              backgroundColor: Colors.white,
+                                                                              title: Center(child: Text(doc.originalName))),
+                                                                          body:
+                                                                              PdfViewer.uri(Uri.parse(url)),
+                                                                        ),
+                                                                      ),
+                                                                    );
+                                                                  } else if (ext ==
+                                                                          'doc' ||
+                                                                      ext ==
+                                                                          'docx') {
+                                                                    // Word docs go through Office Online viewer
+                                                                    final encoded =
+                                                                        Uri.encodeComponent(
+                                                                            url);
+                                                                    target = Uri
+                                                                        .parse(
+                                                                            'https://view.officeapps.live.com/op/view.aspx?src=$encoded');
+                                                                    // Open in new tab (webOnlyWindowName only works on web)
+                                                                    launchUrl(
+                                                                        target,
+                                                                        webOnlyWindowName:
+                                                                            '_blank');
+                                                                  }
+                                                                },
+                                                                child: SizedBox(
+                                                                  height: 50,
+                                                                  width: double
+                                                                      .infinity,
+                                                                  child: Card(
+                                                                    elevation:
+                                                                        4,
+                                                                    margin:
+                                                                        const EdgeInsets
+                                                                            .all(
+                                                                            4),
+                                                                    child:
+                                                                        Container(
+                                                                      width: boxWidth
+                                                                          as double,
+                                                                      decoration: BoxDecoration(
+                                                                          borderRadius: BorderRadius.circular(8),
+                                                                          border: Border.all(
+                                                                            color:
+                                                                                Colors.grey,
+                                                                            width:
+                                                                                1,
+                                                                          )),
+                                                                      child:
+                                                                          Row(
+                                                                        children: [
+                                                                          Padding(
+                                                                            padding: const EdgeInsets.only(
+                                                                                left: 8,
+                                                                                top: 4,
+                                                                                bottom: 4),
+                                                                            child:
+                                                                                Icon(doc.originalName.toLowerCase().endsWith('.pdf') ? Icons.picture_as_pdf : FontAwesomeIcons.solidFileWord, color: doc.originalName.toLowerCase().endsWith('.pdf') ? Colors.redAccent : Colors.blueAccent),
+                                                                          ),
+                                                                          Flexible(
+                                                                            child:
+                                                                                Padding(
+                                                                              padding: const EdgeInsets.all(8.0),
+                                                                              child: AutoSizeText(
+                                                                                minFontSize: 1,
+                                                                                doc.originalName,
+                                                                                maxLines: 3,
+                                                                                overflow: TextOverflow.ellipsis,
+                                                                                textAlign: TextAlign.center,
+                                                                                style: const TextStyle(fontSize: 12),
+                                                                              ),
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                              );
+                                                            },
+                                                          ),
                                                         ),
-                                                      ),
-                                                    ),
+                                                    ],
                                                   )
-                                                : const Icon(
-                                                    FontAwesomeIcons.solidImage,
-                                                    size: 100,
-                                                    color: Colors.deepPurple,
+                                                : Column(
+                                                    spacing: 4,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      o.images.isNotEmpty
+                                                          ? Card(
+                                                              color:
+                                                                  Colors.white,
+                                                              elevation: 8,
+                                                              child: ClipRRect(
+                                                                borderRadius:
+                                                                    BorderRadius
+                                                                        .circular(
+                                                                            8),
+                                                                child:
+                                                                    CachedNetworkImage(
+                                                                  imageUrl:
+                                                                      '${getBaseUrl()}/uploads/${o.images.first}',
+                                                                  width: 100,
+                                                                  height: 100,
+                                                                  maxWidthDiskCache:
+                                                                      200,
+                                                                  fit: BoxFit
+                                                                      .cover,
+                                                                  errorWidget: (_,
+                                                                          __,
+                                                                          ___) =>
+                                                                      const Icon(
+                                                                    FontAwesomeIcons
+                                                                        .solidImage,
+                                                                    color: Colors
+                                                                        .deepPurple,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            )
+                                                          : const Icon(
+                                                              FontAwesomeIcons
+                                                                  .solidImage,
+                                                              size: 100,
+                                                              color: Colors
+                                                                  .deepPurple,
+                                                            ),
+                                                      const SizedBox(width: 12),
+                                                      if (o
+                                                          .documents.isNotEmpty)
+                                                        SizedBox(
+                                                          height: 100,
+                                                          width: clampDouble(
+                                                              screenWidth - 300,
+                                                              100,
+                                                              300),
+                                                          child: ListView
+                                                              .separated(
+                                                            scrollDirection:
+                                                                Axis.vertical,
+                                                            shrinkWrap:
+                                                                true, // ← allow it to size itself
+                                                            physics:
+                                                                const AlwaysScrollableScrollPhysics(),
+                                                            itemCount: o
+                                                                .documents
+                                                                .length,
+                                                            separatorBuilder: (_,
+                                                                    __) =>
+                                                                const SizedBox(
+                                                                    height: 2),
+                                                            itemBuilder:
+                                                                (ctx, i) {
+                                                              final doc = o
+                                                                  .documents[i];
+                                                              final url =
+                                                                  '${getBaseUrl()}/uploads/${doc.filename}';
+                                                              return GestureDetector(
+                                                                onTap: () {
+                                                                  final name = doc
+                                                                      .originalName
+                                                                      .toLowerCase();
+                                                                  final ext = name
+                                                                      .split(
+                                                                          '.')
+                                                                      .last;
+                                                                  Uri target;
+
+                                                                  if (ext ==
+                                                                      'pdf') {
+                                                                    Navigator
+                                                                        .push(
+                                                                      context,
+                                                                      MaterialPageRoute(
+                                                                        builder:
+                                                                            (_) =>
+                                                                                Scaffold(
+                                                                          appBar: AppBar(
+                                                                              backgroundColor: Colors.white,
+                                                                              title: Center(child: Text(doc.originalName))),
+                                                                          body:
+                                                                              PdfViewer.uri(Uri.parse(url)),
+                                                                        ),
+                                                                      ),
+                                                                    );
+                                                                  } else if (ext ==
+                                                                          'doc' ||
+                                                                      ext ==
+                                                                          'docx') {
+                                                                    // Word docs go through Office Online viewer
+                                                                    final encoded =
+                                                                        Uri.encodeComponent(
+                                                                            url);
+                                                                    target = Uri
+                                                                        .parse(
+                                                                            'https://view.officeapps.live.com/op/view.aspx?src=$encoded');
+                                                                    // Open in new tab (webOnlyWindowName only works on web)
+                                                                    launchUrl(
+                                                                        target,
+                                                                        webOnlyWindowName:
+                                                                            '_blank');
+                                                                  }
+                                                                },
+                                                                child: SizedBox(
+                                                                  height: 50,
+                                                                  width: double
+                                                                      .infinity,
+                                                                  child: Card(
+                                                                    elevation:
+                                                                        4,
+                                                                    margin:
+                                                                        const EdgeInsets
+                                                                            .all(
+                                                                            4),
+                                                                    child:
+                                                                        Container(
+                                                                      width: boxWidth
+                                                                          as double,
+                                                                      decoration: BoxDecoration(
+                                                                          borderRadius: BorderRadius.circular(8),
+                                                                          border: Border.all(
+                                                                            color:
+                                                                                Colors.grey,
+                                                                            width:
+                                                                                1,
+                                                                          )),
+                                                                      child:
+                                                                          Row(
+                                                                        children: [
+                                                                          Padding(
+                                                                            padding: const EdgeInsets.only(
+                                                                                left: 8,
+                                                                                top: 4,
+                                                                                bottom: 4),
+                                                                            child:
+                                                                                Icon(doc.originalName.toLowerCase().endsWith('.pdf') ? Icons.picture_as_pdf : FontAwesomeIcons.solidFileWord, color: doc.originalName.toLowerCase().endsWith('.pdf') ? Colors.redAccent : Colors.blueAccent),
+                                                                          ),
+                                                                          Flexible(
+                                                                            child:
+                                                                                Padding(
+                                                                              padding: const EdgeInsets.all(8.0),
+                                                                              child: AutoSizeText(
+                                                                                minFontSize: 1,
+                                                                                doc.originalName,
+                                                                                maxLines: 3,
+                                                                                overflow: TextOverflow.ellipsis,
+                                                                                textAlign: TextAlign.center,
+                                                                                style: const TextStyle(fontSize: 12),
+                                                                              ),
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                              );
+                                                            },
+                                                          ),
+                                                        ),
+                                                    ],
                                                   ),
 
-                                            const SizedBox(width: 12),
                                             Expanded(child: Container()),
                                             Column(
                                               crossAxisAlignment:
@@ -988,6 +1417,251 @@ class _OrdersPageState extends State<OrdersPage> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _NotificationSheetContent extends StatefulWidget {
+  const _NotificationSheetContent();
+  @override
+  State<_NotificationSheetContent> createState() =>
+      _NotificationSheetContentState();
+}
+
+class _NotificationSheetContentState extends State<_NotificationSheetContent> {
+  final List<NotificationItem> _notifications = [];
+  int _offset = 0;
+  final int _limit = 20;
+  bool _isLoading = false;
+  bool _hasMore = true;
+  late final StreamSubscription<NotificationItem> _notifSub;
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+
+    // ② Load the first page of notifications
+    _loadNotifications();
+
+    // ③ Register to get real-time pushes
+    _notifSub = SocketService().onNewNotificationStream.listen((notif) {
+      if (!mounted) return;
+      setState(() {
+        _notifications.insert(0, notif);
+      });
+    });
+
+    // ④ Pagination listener
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+              _scrollController.position.maxScrollExtent - 100 &&
+          !_isLoading &&
+          _hasMore) {
+        _loadNotifications();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    // ⑤ Unregister the callback to avoid leaks
+    _notifSub.cancel();
+    _scrollController.dispose();
+
+    super.dispose();
+  }
+
+  Future<void> _loadNotifications() async {
+    if (_isLoading || !_hasMore) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final uri = Uri.parse(
+        '${getBaseUrl()}/notifications?offset=$_offset&limit=$_limit',
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('jwt') ?? '';
+      final resp = await http.get(uri, headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      });
+
+      if (resp.statusCode == 200) {
+        final List<dynamic> jsonList = jsonDecode(resp.body);
+        final fetched = jsonList
+            .map((e) => NotificationItem.fromJson(e as Map<String, dynamic>))
+            .toList();
+
+        setState(() {
+          _notifications.addAll(fetched);
+          _offset += _limit;
+          if (fetched.length < _limit) _hasMore = false;
+          _isLoading = false;
+        });
+      } else if (resp.statusCode == 403) {
+        // handle unauthorized → logout, etc.
+      } else {
+        throw Exception('Failed to load notifications');
+      }
+    } catch (_) {
+      setState(() => _isLoading = false);
+      rethrow;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                color: Colors.deepPurple,
+                Icons.notifications,
+                size: 25,
+              ),
+              SizedBox(
+                width: 4,
+              ),
+              Text(
+                'Notifications',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: (_notifications.isEmpty && _isLoading)
+                ? const Center(child: CircularProgressIndicator())
+                : (_notifications.isEmpty && !_isLoading)
+                    ? const Center(child: Text('No Notifications'))
+                    : ListView.builder(
+                        controller: _scrollController,
+                        itemCount: _notifications.length + (_hasMore ? 1 : 0),
+                        itemBuilder: (ctx, idx) {
+                          if (idx == _notifications.length) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
+                          final notif = _notifications[idx];
+                          return Card(
+                            margin: const EdgeInsets.all(4),
+                            clipBehavior: Clip.antiAlias,
+                            elevation: 2,
+                            child: ListTile(
+                              title: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        DateFormat('dd/MM/yyyy HH:mm')
+                                            .format(notif.createdAt.toLocal()),
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600),
+                                      ),
+                                      const SizedBox(
+                                        width: 12,
+                                      ),
+                                      Flexible(
+                                        child: AutoSizeText(
+                                          maxLines: 2,
+                                          minFontSize: 1,
+                                          '${notif.senderId}',
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4, bottom: 4),
+                                    child: Divider(
+                                      height: 1,
+                                      thickness: 2,
+                                      color: Colors.deepPurple,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              subtitle: Text(
+                                notif.message,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              onTap: () async {
+                                if (notif.url == null) return;
+
+                                // 1) Parse out the ID:
+                                final parts = notif.url!.split('/');
+                                final id = int.tryParse(parts.last);
+                                if (id == null) return; // invalid URL
+
+                                // 2) Capture NavigatorState and ScaffoldMessengerState now,
+                                //    before any `await` so you never write `Navigator.of(context)`
+                                //    after an async gap.
+                                final navigator = Navigator.of(context);
+                                final messenger = ScaffoldMessenger.of(context);
+
+                                // 3) Do your async work (SharedPreferences + HTTP GET):
+                                final prefs =
+                                    await SharedPreferences.getInstance();
+                                final token = prefs.getString('jwt') ?? '';
+                                final uri =
+                                    Uri.parse('${getBaseUrl()}/orders/$id');
+                                final resp = await http.get(
+                                  uri,
+                                  headers: {
+                                    'Authorization': 'Bearer $token',
+                                    'Content-Type': 'application/json',
+                                  },
+                                );
+
+                                // 4) Now branch on the response. Use the saved `navigator` / `messenger`.
+                                if (resp.statusCode == 200) {
+                                  final Map<String, dynamic> json =
+                                      jsonDecode(resp.body);
+                                  final fetchedOrder = Order.fromJson(json);
+
+                                  // Pop the notification card, then push the detail page:
+                                  navigator.pop();
+                                  navigator.push(
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          OrderDetailPage(order: fetchedOrder),
+                                    ),
+                                  );
+                                } else {
+                                  // Show an error snackbar
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                        content:
+                                            Text('Could not load order #$id')),
+                                  );
+                                }
+                              },
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
       ),
     );
   }

@@ -7,6 +7,7 @@ const http    = require('http');
 const cors    = require('cors');
 const db      = require('./db');
 const util    = require('util');
+
 const multer  = require('multer');
 const sharp   = require('sharp');
 const fs      = require('fs');
@@ -75,10 +76,21 @@ const upload = multer({
       }
 
      // 2) documents field → only PDFs
-     if (file.fieldname === 'documents') {
-      if (file.mimetype === 'application/pdf') return cb(null, true);
-       return cb(new Error('Only PDF files allowed'), false);
-     }
+    if (file.fieldname === 'documents') {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const allowedMimes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ];
+  if (
+    allowedMimes.includes(file.mimetype) ||
+    ['.pdf', '.doc', '.docx'].includes(ext)
+  ) {
+    return cb(null, true);
+  }
+  return cb(new Error('Only PDF and Word documents allowed'), false);
+}
 
 
     // 3) reject everything else
@@ -284,13 +296,14 @@ app.get('/notifications', async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 10;
 
     // 2) Query the notifications table, ordering by newest first
-    const [rows] = await db.query(
+    const rows = await dbQuery(
       `
       SELECT
         id,
         message,
         url,
-        created_at
+        created_at,
+        senderId  
       FROM notifications
       ORDER BY created_at DESC
       LIMIT ?
@@ -298,6 +311,7 @@ app.get('/notifications', async (req, res) => {
       `,
       [limit, offset]
     );
+
 
     // 3) Return the resulting rows as JSON
     return res.json(rows);
@@ -411,6 +425,40 @@ app.post(
         );
       }
 
+
+         // insert a notification and emit it ─────────────────
+   
+      const notifMessage = ` Created new order #${req.body.jobId}`;
+      const notifUrl     = `/orders/${orderId}`;
+      const notifsenderId    = `${req.username}`;
+
+      // a) Insert into notifications table
+      const notificationResult = await dbQuery(
+        `INSERT INTO notifications (message, url,senderId) VALUES (?, ?,?)`,
+          [notifMessage, notifUrl,notifsenderId]
+    );
+    
+      const newNotifId = notificationResult.insertId;
+
+      // b) Fetch the inserted notification 
+      const [notifRows] = await dbQuery(
+        `SELECT id, message, url, created_at
+           FROM notifications
+          WHERE id = ?`,
+        [newNotifId]
+      );
+    
+       const payload = {
+        id: notifRows.id,
+        message: notifRows.message,
+         url: notifRows.url,
+        created_at: notifRows.created_at,   
+        senderId: req.username
+                    };
+
+// 3) Emit that combined object:
+io.emit('new_notification', payload);
+
       
       // 5) Fetch and return the full order with its images
       const fetchSql = `
@@ -496,13 +544,68 @@ app.patch('/orders/:id', ensureOrderExists, async (req, res) => {
   }
 
   try {
-    // 1) perform the update
+
+  // ─── 1) Check if status is present and different from the current one ─────────
+    let shouldNotify = false;
+    let newStatus;
+    if (req.body.status !== undefined) {
+      newStatus = req.body.status;
+      // Fetch the existing status from the database
+      const [statusRows] = await dbQuery(
+       `SELECT status FROM orders WHERE id = ?`,
+        [orderId]
+      );
+     if(statusRows.status != undefined) {
+      const oldStatus = statusRows.status;
+      if (oldStatus !== newStatus) {
+        shouldNotify = true;
+      }
+     }
+    
+    }
+
+    // 2) perform the update
     await dbQuery(
       `UPDATE orders SET ${sets.join(', ')} WHERE id = ?`,
       [...params, orderId]
     );
 
-    // 2) re-fetch the full order (with images & documents) exactly as in your other endpoints
+      // ─── 3) If status changed, insert a notification and emit it ─────────────────
+    if (shouldNotify) {
+      const notifMessage = `Order #${req.body.jobId} status changed to "${newStatus}"`;
+      const notifUrl     = `/orders/${orderId}`;
+      const notifsenderId    = `${req.username}`;
+
+      // a) Insert into notifications table
+      const insertResult = await dbQuery(
+        `INSERT INTO notifications (message, url,senderId) VALUES (?, ?,?)`,
+          [notifMessage, notifUrl,notifsenderId]
+    );
+    
+      const newNotifId = insertResult.insertId;
+
+      // b) Fetch the inserted notification so we can get its created_at timestamp
+      const [notifRows] = await dbQuery(
+        `SELECT id, message, url, created_at
+           FROM notifications
+          WHERE id = ?`,
+        [newNotifId]
+      );
+    
+       const payload = {
+        id: notifRows.id,
+        message: notifRows.message,
+         url: notifRows.url,
+        created_at: notifRows.created_at,   // or notif.createdAt, depending on your field names
+        senderId: req.username
+                    };
+
+// 3) Emit that combined object:
+io.emit('new_notification', payload);
+        
+    }
+
+    // 4) re-fetch the full order (with images & documents) exactly as in your other endpoints
     const fetchSql = `
       SELECT
         o.id,
@@ -536,7 +639,7 @@ app.patch('/orders/:id', ensureOrderExists, async (req, res) => {
     `;
     const [updatedOrder] = await dbQuery(fetchSql, [orderId]);
 
-    // 3) send back the updated order, and notify clients
+    // 5) send back the updated order, and notify clients
     res.json(updatedOrder);
     io.emit('ordersUpdated', {orderId});
   } catch (err) {
@@ -884,6 +987,44 @@ app.post('/orders/:id/updates',ensureOrderExists, async (req, res) => {
        WHERE id = ?`,
       [result.insertId]
     );
+
+    const [orderRow] = await dbQuery(
+      `SELECT jobId
+         FROM orders
+        WHERE id = ?`,
+      [orderId]
+    );
+    const jobId = orderRow.jobId;
+
+    const notifMessage = `Order #${jobId} \n ${text} `;
+   
+    const notifUrl = `/orders/${orderId}`;
+    const notifsenderId = `${user}`;
+
+    const notifInsert = await dbQuery(
+      `INSERT INTO notifications (message, url,senderId)
+       VALUES (?, ?,?)`,
+      [notifMessage, notifUrl,notifsenderId]
+    );
+    const newNotifId = notifInsert.insertId;
+
+    const [notifRow] = await dbQuery(
+      `SELECT id, message, url, created_at
+       FROM notifications
+       WHERE id = ?`,
+      [newNotifId]
+    );
+
+    const payload = {
+      id:         notifRow.id,
+      message:    notifRow.message,
+      url:        notifRow.url,
+      created_at:  notifRow.created_at, 
+      senderId:   user.toString()
+    };
+    io.emit('new_notification', payload);
+
+
     res.status(201).json(newUpdate);
     io.emit('updatesUpdated', {orderId});
   } catch (err) {

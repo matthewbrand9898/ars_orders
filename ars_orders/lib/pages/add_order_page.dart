@@ -161,7 +161,7 @@ class _AddOrderPageState extends State<AddOrderPage> {
     final input = web.HTMLInputElement()
       // only change: accept PDFs
       ..type = 'file'
-      ..accept = '.pdf'
+      ..accept = '.pdf,.doc,.docx'
       ..multiple = true;
     input.click();
     await input.onChange.first;
@@ -185,16 +185,25 @@ class _AddOrderPageState extends State<AddOrderPage> {
       files.length,
       (i) => files.item(i)!,
     );
-
+    // only allow PDFs and Word docs
+    final allowedMime = {
+      'application/pdf',
+      'application/msword', // .doc
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document' // .docx
+    };
     // only change: filter for PDFs
     final bad = dartFiles.where((f) {
       final name = f.name.toLowerCase();
-      return f.type != 'application/pdf' && !name.endsWith('.pdf');
+      return !(allowedMime.contains(f.type) ||
+          name.endsWith('.pdf') ||
+          name.endsWith('.doc') ||
+          name.endsWith('.docx'));
     }).toList();
     if (bad.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Only PDF files are allowed')),
+          const SnackBar(
+              content: Text('Only PDF or Word documents are allowed')),
         );
       }
       setState(() => _isSubmitting = false);
@@ -748,7 +757,7 @@ class _AddOrderPageState extends State<AddOrderPage> {
                         if (_selectedDocuments.isNotEmpty) ...[
                           const SizedBox(height: 12),
                           Text(
-                            '${_selectedDocuments.length} PDF${_selectedDocuments.length > 1 ? 's' : ''} selected out of 5',
+                            '${_selectedDocuments.length} Document${_selectedDocuments.length > 1 ? 's' : ''} selected out of 5',
                             style: theme.textTheme.bodyMedium,
                           ),
                           const SizedBox(height: 4),
@@ -756,9 +765,17 @@ class _AddOrderPageState extends State<AddOrderPage> {
                             spacing: 8,
                             runSpacing: 4,
                             children: _selectedDocuments.map((file) {
+                              final name = file.name.toLowerCase();
+                              final isPdf = file.type == 'application/pdf' ||
+                                  name.endsWith('.pdf');
+
+                              final avatarIcon = isPdf
+                                  ? const Icon(Icons.picture_as_pdf,
+                                      size: 20, color: Colors.redAccent)
+                                  : const Icon(FontAwesomeIcons.solidFileWord,
+                                      size: 20, color: Colors.blueAccent);
                               return Chip(
-                                avatar: const Icon(Icons.picture_as_pdf,
-                                    size: 20, color: Colors.red),
+                                avatar: avatarIcon,
                                 label: Text(
                                   file.name,
                                   overflow: TextOverflow.ellipsis,

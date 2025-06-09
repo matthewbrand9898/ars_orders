@@ -729,7 +729,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
   Future<void> _pickAndUploadDocuments() async {
     final input = web.HTMLInputElement()
       ..type = 'file'
-      ..accept = '.pdf'
+      ..accept = '.pdf,.doc,.docx'
       ..multiple = true;
     input.click();
     await input.onChange.first;
@@ -993,7 +993,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
   Future<void> _processAndUpload(web.FileList files, String type) async {
     // 1) Determine allowed extensions and max count per type
     final allowedExts = (type == 'Documents')
-        ? ['pdf']
+        ? ['pdf', 'doc', 'docx']
         : ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'heic', 'heif'];
     final maxCount = (type == 'Documents') ? 5 : 10;
 
@@ -1042,14 +1042,32 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
     for (final f in good) {
       final jsBuf = await f.arrayBuffer().toDart as ByteBuffer;
       final bytes = Uint8List.view(jsBuf);
+
+      MediaType? mt;
+      if (type == 'Documents') {
+        // use the File’s real MIME if available, otherwise fall back
+        final mime =
+            f.type; // e.g. "application/pdf", "application/msword", etc.
+        if (mime.isNotEmpty) {
+          mt = MediaType.parse(mime);
+        } else if (f.name.toLowerCase().endsWith('.doc')) {
+          mt = MediaType('application', 'msword');
+        } else if (f.name.toLowerCase().endsWith('.docx')) {
+          mt = MediaType(
+            'application',
+            'vnd.openxmlformats-officedocument.wordprocessingml.document',
+          );
+        } else {
+          mt = MediaType('application', 'pdf');
+        }
+      }
+
       req.files.add(
         http.MultipartFile.fromBytes(
           field,
           bytes,
           filename: f.name,
-          // for docs, explicitly set PDF MIME
-          contentType:
-              (type == 'Documents') ? MediaType('application', 'pdf') : null,
+          contentType: mt, // now correct for pdf/doc/docx
         ),
       );
     }
@@ -2386,8 +2404,17 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                             const SizedBox(height: 12),
                             for (final doc in _docs)
                               ListTile(
-                                leading: const Icon(Icons.picture_as_pdf,
-                                    color: Colors.red),
+                                leading: Icon(
+                                    doc.originalName
+                                            .toLowerCase()
+                                            .endsWith('.pdf')
+                                        ? Icons.picture_as_pdf
+                                        : FontAwesomeIcons.solidFileWord,
+                                    color: doc.originalName
+                                            .toLowerCase()
+                                            .endsWith('.pdf')
+                                        ? Colors.redAccent
+                                        : Colors.blueAccent),
                                 title: Text(doc.originalName,
                                     style:
                                         Theme.of(context).textTheme.bodyMedium),
@@ -2401,9 +2428,27 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                                       )
                                     : null,
                                 onTap: () {
-                                  final url =
+                                  final name = doc.originalName.toLowerCase();
+                                  final ext = name.split('.').last;
+                                  final rawUrl =
                                       '${getBaseUrl()}/uploads/${doc.filename}';
-                                  launchUrl(Uri.parse(url),
+
+                                  Uri target;
+                                  if (ext == 'pdf') {
+                                    // PDFs open directly
+                                    target = Uri.parse(rawUrl);
+                                  } else if (ext == 'doc' || ext == 'docx') {
+                                    // Word docs go through Office Online viewer
+                                    final encoded = Uri.encodeComponent(rawUrl);
+                                    target = Uri.parse(
+                                        'https://view.officeapps.live.com/op/view.aspx?src=$encoded');
+                                  } else {
+                                    // fallback for anything else
+                                    target = Uri.parse(rawUrl);
+                                  }
+
+                                  // Open in new tab (webOnlyWindowName only works on web)
+                                  launchUrl(target,
                                       webOnlyWindowName: '_blank');
                                 },
                               ),
