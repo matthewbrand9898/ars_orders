@@ -3,7 +3,7 @@ import 'dart:js_interop';
 import 'package:ars_orders/pages/login_page.dart';
 import 'package:ars_orders/pages/order_page.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:js/js.dart';
+
 //import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -29,7 +29,7 @@ class _OrdersAppState extends State<OrdersApp> {
   bool _loggedIn = false;
   final AudioPlayer _unlockPlayer = AudioPlayer();
   bool _audioUnlocked = false;
-  dynamic _clickHandler;
+  late JSFunction clickHandler;
   void _logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('jwt');
@@ -40,31 +40,30 @@ class _OrdersAppState extends State<OrdersApp> {
   void initState() {
     super.initState();
     _checkToken();
-    _clickHandler = allowInterop((event) {
+    clickHandler = ((JSAny? event) {
       if (_audioUnlocked) return;
       _audioUnlocked = true;
 
       _unlockPlayer
           .play(
-        volume: 0,
-        UrlSource('/assets/sounds/notificationSound.wav'),
-      )
-          .then((_) {
-        _unlockPlayer.stop();
-      }).catchError((_) {});
+            volume: 0,
+            UrlSource('sounds/notificationSound.wav'),
+          )
+          .then((_) => _unlockPlayer.stop())
+          .catchError((_) {});
 
-      // Remove this listener after first invocation
-      web.document.removeEventListener('click', _clickHandler);
-    });
+      // remove listener after first click
+      web.document.onclick = null;
+    }).toJS;
 
-    web.document.addEventListener('click', _clickHandler);
+    web.document.onclick = clickHandler;
   }
 
   @override
   void dispose() {
     _unlockPlayer.dispose();
     super.dispose();
-    web.window.removeEventListener('click', _clickHandler);
+    web.document.onclick = null;
   }
 
   Future<void> _checkToken() async {

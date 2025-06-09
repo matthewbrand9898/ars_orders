@@ -5,7 +5,6 @@ import 'dart:js_interop';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:http_parser/http_parser.dart';
-import 'package:js/js.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,16 +15,17 @@ import '../services/api.dart';
 import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 
 @JS('window.heic2anyConvert')
-external void _heic2anyConvert(JSAny blob, Function callback);
+external void _heic2anyConvert(JSAny blob, JSFunction callback);
 
 @JS('window.imageCompressCall')
 external void _imageCompressCall(
-    JSAny file, CompressOptions options, Function callback);
+    JSAny file, CompressOptions options, JSFunction callback);
 
 @JS('URL.createObjectURL')
 external String _createObjectURL(JSAny blob);
 
 @JS()
+@staticInterop
 @anonymous
 class CompressOptions {
   external factory CompressOptions({
@@ -86,9 +86,15 @@ class _AddOrderPageState extends State<AddOrderPage> {
 
   Future<JSAny> _heicConvert(JSAny blob) {
     final completer = Completer<JSAny>();
-    _heic2anyConvert(blob, allowInterop((res) {
-      completer.complete(res as JSAny);
-    }));
+
+    // wrap your Dart closure as a JSFunction
+    final JSFunction jsCallback = ((JSAny res) {
+      completer.complete(res);
+    }).toJS; // Function.toJS → JSFunction :contentReference[oaicite:0]{index=0}
+
+    // call the JS function
+    _heic2anyConvert(blob, jsCallback);
+
     return completer.future;
   }
 
@@ -99,9 +105,10 @@ class _AddOrderPageState extends State<AddOrderPage> {
       initialQuality: quality,
       useWebWorker: true,
     );
-    _imageCompressCall(file, options, allowInterop((res) {
-      completer.complete(res as JSAny);
-    }));
+    final JSFunction jsCallback = ((JSAny res) {
+      completer.complete(res);
+    }).toJS;
+    _imageCompressCall(file, options, jsCallback);
     return completer.future;
   }
 
@@ -288,8 +295,10 @@ class _AddOrderPageState extends State<AddOrderPage> {
     required String fieldName,
   }) async {
     for (final file in files) {
-      final jsBuffer = await file.arrayBuffer().toDart as ByteBuffer;
-      final bytes = Uint8List.view(jsBuffer);
+      final JSArrayBuffer jsBuf = await (file.arrayBuffer()).toDart;
+      final ByteBuffer dartBuf = jsBuf.toDart;
+
+      final bytes = Uint8List.view(dartBuf);
 
       // file.type is something like "image/jpeg" or "image/png"
       final parts = file.type.split('/');

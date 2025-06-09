@@ -9,7 +9,7 @@ import 'package:auto_size_text/auto_size_text.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:js/js_util.dart' as js_util;
+
 import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
@@ -566,10 +566,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
 
     // 3) iOS Safari fallback
     if (kIsWeb) {
-      final ua = js_util.getProperty(
-        js_util.getProperty(js_util.globalThis, 'navigator'),
-        'userAgent',
-      ) as String;
+      final ua = web.window.navigator.userAgent;
       final isIOSSafari = ua.contains('Safari') &&
           !ua.contains('Chrome') &&
           ua.contains('Mobile');
@@ -577,19 +574,15 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
       if (isIOSSafari) {
         // Open the PDF in a new tab so Safari’s native viewer can print multi-page
         final Uint8List bytes = await pdf.save();
-        final blob = js_util.callConstructor(
-          js_util.getProperty(js_util.globalThis, 'Blob'),
-          [
-            [bytes],
-            js_util.jsify({'type': 'application/pdf'}),
-          ],
+        final JSArrayBuffer buffer = bytes.buffer.toJS;
+        // 3) build a JS Blob
+        final web.Blob blob = web.Blob(
+          [buffer].toJS,
+          web.BlobPropertyBag(type: 'application/pdf'),
         );
-        final url = js_util.callMethod(
-          js_util.getProperty(js_util.globalThis, 'URL'),
-          'createObjectURL',
-          [blob],
-        ) as String;
-        js_util.callMethod(js_util.globalThis, 'open', [url, '_blank']);
+        // 4) get an object URL
+        final String url = web.URL.createObjectURL(blob);
+        web.window.open(url, '_blank');
         return;
       }
     }
@@ -1040,8 +1033,10 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
 
     // 6) Attach each file
     for (final f in good) {
-      final jsBuf = await f.arrayBuffer().toDart as ByteBuffer;
-      final bytes = Uint8List.view(jsBuf);
+      final JSArrayBuffer jsBuf = await (f.arrayBuffer()).toDart;
+      final ByteBuffer dartBuf = jsBuf.toDart;
+
+      final bytes = Uint8List.view(dartBuf);
 
       MediaType? mt;
       if (type == 'Documents') {
