@@ -1,0 +1,21 @@
+# 1) Ignore everything
+*
+
+# 2) But keep this .gitignore so Git can see it
+!.gitignore
+
+# 3) Un-ignore the two folders so that nested !-rules can match
+!orders-backend/
+!ars_orders/
+
+# ─────────────────────────────────────────────────
+# 4) orders-backend: ignore all under it…
+orders-backend/*
+# …except server.js
+!orders-backend/server.js
+
+# 5) ars_orders: ignore all under it…
+ars_orders/*
+# …except lib/ and its contents
+!ars_orders/lib/
+!ars_orders/lib/**
