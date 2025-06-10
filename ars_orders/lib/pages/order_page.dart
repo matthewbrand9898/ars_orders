@@ -921,13 +921,12 @@ class _OrdersPageState extends State<OrdersPage> {
                                                                             child:
                                                                                 Padding(
                                                                               padding: const EdgeInsets.all(8.0),
-                                                                              child: AutoSizeText(
-                                                                                minFontSize: 1,
+                                                                              child: Text(
                                                                                 doc.originalName,
-                                                                                maxLines: 3,
+                                                                                maxLines: 1,
                                                                                 overflow: TextOverflow.ellipsis,
                                                                                 textAlign: TextAlign.center,
-                                                                                style: const TextStyle(fontSize: 12),
+                                                                                style: const TextStyle(fontSize: 14),
                                                                               ),
                                                                             ),
                                                                           ),
@@ -1101,13 +1100,12 @@ class _OrdersPageState extends State<OrdersPage> {
                                                                             child:
                                                                                 Padding(
                                                                               padding: const EdgeInsets.all(8.0),
-                                                                              child: AutoSizeText(
-                                                                                minFontSize: 1,
+                                                                              child: Text(
                                                                                 doc.originalName,
-                                                                                maxLines: 3,
+                                                                                maxLines: 1,
                                                                                 overflow: TextOverflow.ellipsis,
                                                                                 textAlign: TextAlign.center,
-                                                                                style: const TextStyle(fontSize: 12),
+                                                                                style: const TextStyle(fontSize: 14),
                                                                               ),
                                                                             ),
                                                                           ),
