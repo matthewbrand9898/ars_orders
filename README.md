@@ -44,7 +44,7 @@ REST API architecture
 ### Orders Page
 ![Orders](./orderspage.png)
 
-### Orders Page (Pagination)
+### Orders Page (Notifications)
 ![Orders Page 2](./orderspage2.png)
 
 ### Order Details
